@@ -1,0 +1,36 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: appuser
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      POSTGRES_DB: authdb
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U appuser -d authdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+  api:
+    image: ${API_IMAGE:?set in .env}
+    restart: unless-stopped
+    expose:
+      - "8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://appuser:${POSTGRES_PASSWORD:?set in .env}@db:5432/authdb
+      SECRET_KEY: ${SECRET_KEY:?set in .env}
+    depends_on:
+      db:
+        condition: service_healthy
+  web:
+    image: ${WEB_IMAGE:?set in .env}
+    restart: unless-stopped
+    ports:
+      - "80:8080"
+    depends_on:
+      - api
+volumes:
+  pgdata:
