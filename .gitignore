@@ -1,2 +1,7 @@
 .env
 *.pem
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+crash.log
