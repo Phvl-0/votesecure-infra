@@ -1,24 +1,74 @@
 # votesecure-infra
 
-Notes for running votesecure-fullstack on AWS.
+Infrastructure and deploy notes for votesecure-fullstack (React, FastAPI, PostgreSQL) on AWS.
+Built as hands-on practice: launched, hardened, deployed, monitored, then torn down to stop the cost.
+Everything here was run for real. It is not a long-running production system.
 
-## VM
-- Region eu-north-1, t3.small (2 vCPU, 2 GiB), Ubuntu 24.04, 20 GB gp3, IMDSv2 required
-- Key pair votesecure-key (ed25519); the private key lives only in ~/.ssh and never in Git
-- Security group votesecure-sg: SSH (22) only from my own IP /32, HTTP (80) and HTTPS (443) open
+## Architecture
 
-## Hardening (done by hand on the VM)
-1. apt update and upgrade
-2. /etc/ssh/sshd_config.d/10-hardening.conf: root login off, password login off, MaxAuthTries 3
-3. ufw: deny incoming by default, allow 22, 80 and 443
-4. fail2ban sshd jail: 5 failures in 10 minutes means a 1 hour ban
-5. Docker Engine and Compose plugin from Docker's official apt repo, used with sudo
+```mermaid
+flowchart LR
+  user[Browser] -->|HTTPS 443, HTTP 80 redirects| caddy
+  subgraph vm[EC2 t3.small, Ubuntu 24.04, eu-north-1]
+    caddy[Caddy: TLS and redirect] --> web[nginx: React app]
+    web -->|/api| api[FastAPI]
+    api --> db[(PostgreSQL volume)]
+    prom[Prometheus] --> node[node-exporter]
+    prom --> dockermetrics[Docker engine metrics]
+    graf[Grafana, localhost only]
+  end
+  gh[GitHub Actions] -->|OIDC role, SSM Run Command| vm
+  gh --> ghcr[(ghcr.io images)]
+  ghcr --> vm
+  ssm[(SSM Parameter Store secrets)] --> vm
+```
 
-## Verification
-- Key login works; password login is refused with "Permission denied (publickey)"
-- ufw is active; the fail2ban sshd jail is running
+## What is in this repo
 
-## Limits and notes
-- Ports published by Docker bypass ufw, so only nginx will publish a port and the security group is the outer wall
-- The SSH rule is tied to my home IP; if the IP changes, update the rule instead of opening port 22 to everyone
-- Private key and any .env files stay out of Git
+- `main.tf`, `network.tf`, `vm.tf`, `variables.tf`, `userdata.sh`: Terraform for the key pair, security group, VM and Elastic IP attachment
+- `docker-compose.prod.yml`, `Caddyfile`: the app stack (db, api, web, caddy)
+- `monitoring/`: Prometheus, node-exporter and Grafana, listening on 127.0.0.1 only and reached through an SSH tunnel
+- `scripts/`: `deploy.sh`, `backup.sh`, `monitoring-up.sh`
+
+## How a deploy works
+
+A merge to `main` in the app repo builds the images, scans them with Trivy and pushes them tagged with the commit SHA. The deploy job then assumes an AWS role through OIDC, with no stored keys and a role pinned to the repo's main branch. SSM Run Command runs `deploy.sh` on the VM. The script fetches secrets from Parameter Store into a RAM-disk file, logs in to ghcr.io, pulls, restarts, health-checks over HTTPS, rolls back on failure and deletes the temporary files.
+
+## Security notes
+
+- SSH by key only, root login off, ufw default deny, fail2ban; the security group allows SSH only from my own IP
+- Secrets live only in Parameter Store (SecureString) and never in Git
+- Only Caddy publishes ports (80 and 443); db, api and web stay internal
+- IMDSv2 required; the CI role can run one SSM document on one instance
+- Monitoring listens on localhost only
+
+## Rebuild from scratch
+
+Prerequisites, done by hand once:
+
+- AWS account with MFA and an IAM admin user, and the AWS CLI and Terraform installed
+- An Elastic IP tagged `Name=votesecure-eip`, and a DNS name pointing at it
+- IAM role and instance profile `votesecure-vm-ssm` (AmazonSSMManagedInstanceCore plus read access to `parameter/votesecure/*`)
+- Parameter Store SecureStrings `/votesecure/POSTGRES_PASSWORD`, `SECRET_KEY`, `GHCR_TOKEN` and `GRAFANA_ADMIN_PASSWORD`
+- GitHub OIDC provider and role `votesecure-ci-deploy`, plus the repo variables `AWS_DEPLOY_ROLE_ARN` and `AWS_INSTANCE_ID`
+
+Steps:
+
+1. Create `terraform.tfvars` with `my_ip_cidr`, then run `terraform init` and `terraform apply`.
+2. Wait until `/var/lib/votesecure-bootstrap-done` exists on the VM.
+3. Manual gaps, not yet in `userdata.sh`: install AWS CLI v2, add a 1 GB swap file, and set `metrics-addr` to `127.0.0.1:9323` in `/etc/docker/daemon.json`, then restart Docker.
+4. Copy the compose file, Caddyfile, scripts and monitoring folder to `~/votesecure` on the VM, and create `images.env` with the `API_IMAGE` and `WEB_IMAGE` lines.
+5. Run `sudo ./deploy.sh <commit-sha>` and `sudo ./monitoring-up.sh`.
+6. Update the CI role's policy and the `AWS_INSTANCE_ID` variable with the new instance ID.
+
+## Cost and teardown
+
+Paid AWS account with no credits. A t3.small costs about $0.022 per hour, and an Elastic IP about $0.005 per hour even when idle. Stop the VM when idle. When finished, run `terraform destroy` and release the Elastic IP.
+
+## Honest limits
+
+- The free duckdns.org subdomain has a valid Let's Encrypt certificate, but Chrome flags it as Dangerous. No real vote was held on it.
+- Terraform state is local only. IAM, Parameter Store and the Elastic IP are managed by hand.
+- `userdata.sh` does not yet cover the swap file, Docker metrics or the AWS CLI, and the rebuild was not re-proven after those additions.
+- Alerts fire only inside Prometheus. There are no notifications.
+- Backups live on the same VM, and a restore was tested once.
