@@ -10,7 +10,7 @@ sed -i -E "s#(votesecure-fullstack-(api|web)):[^ ]*#\1:${SHA}#" .env
 $C pull -q
 $C up -d
 sleep 25
-if [ "$($C ps --status running -q | wc -l)" -eq 3 ] && curl -fsS -o /dev/null http://localhost/; then
+if [ "$($C ps --status running -q | wc -l)" -eq 4 ] && curl -fsS -o /dev/null --resolve votesecure-phvl-0.duckdns.org:443:127.0.0.1 https://votesecure-phvl-0.duckdns.org/; then
   echo "deploy ok: $SHA"
 else
   echo "health check failed, rolling back"

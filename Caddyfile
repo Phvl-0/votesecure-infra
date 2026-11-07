@@ -1,0 +1,3 @@
+votesecure-phvl-0.duckdns.org {
+    reverse_proxy web:8080
+}
