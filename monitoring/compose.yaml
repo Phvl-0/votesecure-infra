@@ -1,0 +1,42 @@
+name: votesecure-monitoring
+services:
+  prometheus:
+    image: prom/prometheus:v3.13.5
+    restart: unless-stopped
+    network_mode: host
+    mem_limit: 300m
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=3d
+      - --web.listen-address=127.0.0.1:9090
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alerts.yml:/etc/prometheus/alerts.yml:ro
+      - promdata:/prometheus
+  node-exporter:
+    image: prom/node-exporter:v1.11.1
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    mem_limit: 64m
+    command:
+      - --path.rootfs=/host
+      - --web.listen-address=127.0.0.1:9100
+    volumes:
+      - /:/host:ro,rslave
+  grafana:
+    image: grafana/grafana:13.2.4
+    restart: unless-stopped
+    network_mode: host
+    mem_limit: 350m
+    environment:
+      GF_SERVER_HTTP_ADDR: 127.0.0.1
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set in .env.monitoring}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - grafanadata:/var/lib/grafana
+      - ./grafana-datasource.yml:/etc/grafana/provisioning/datasources/prometheus.yml:ro
+volumes:
+  promdata:
+  grafanadata:
