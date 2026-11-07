@@ -28,7 +28,7 @@ flowchart LR
 - `main.tf`, `network.tf`, `vm.tf`, `variables.tf`, `userdata.sh`: Terraform for the key pair, security group, VM and Elastic IP attachment
 - `docker-compose.prod.yml`, `Caddyfile`: the app stack (db, api, web, caddy)
 - `monitoring/`: Prometheus, node-exporter and Grafana, listening on 127.0.0.1 only and reached through an SSH tunnel
-- `scripts/`: `deploy.sh`, `backup.sh`, `monitoring-up.sh`
+- `scripts/`: `deploy.sh`, `backup.sh`, `monitoring-up.sh`, `provision.sh`
 
 ## How a deploy works
 
@@ -54,21 +54,23 @@ Prerequisites, done by hand once:
 
 Steps:
 
-1. Create `terraform.tfvars` with `my_ip_cidr`, then run `terraform init` and `terraform apply`.
-2. Wait until `/var/lib/votesecure-bootstrap-done` exists on the VM.
-3. Manual gaps, not yet in `userdata.sh`: install AWS CLI v2, add a 1 GB swap file, and set `metrics-addr` to `127.0.0.1:9323` in `/etc/docker/daemon.json`, then restart Docker.
-4. Copy the compose file, Caddyfile, scripts and monitoring folder to `~/votesecure` on the VM, and create `images.env` with the `API_IMAGE` and `WEB_IMAGE` lines.
-5. Run `sudo ./deploy.sh <commit-sha>` and `sudo ./monitoring-up.sh`.
-6. Update the CI role's policy and the `AWS_INSTANCE_ID` variable with the new instance ID.
+1. Create `terraform.tfvars` with `my_ip_cidr`, then run `terraform init` and `terraform apply`. `userdata.sh` hardens the VM and installs Docker, the AWS CLI, a swap file and Docker's metrics endpoint.
+2. Run `./scripts/provision.sh <app-commit-sha>`. It waits for the bootstrap, copies the compose file, Caddyfile, scripts and monitoring folder, deploys the app and starts monitoring.
+3. Update the CI role's policy and the `AWS_INSTANCE_ID` variable with the new instance ID.
 
 ## Cost and teardown
 
 Paid AWS account with no credits. A t3.small costs about $0.022 per hour, and an Elastic IP about $0.005 per hour even when idle. Stop the VM when idle. When finished, run `terraform destroy` and release the Elastic IP.
 
+## Verified
+
+- Destroyed and rebuilt the VM from code twice. The second rebuild, after adding swap, Docker metrics and the AWS CLI to `userdata.sh`, came up through `provision.sh`, and a CI deploy through SSM succeeded on it.
+- Trivy gates every image build, and fixed base-image CVEs were patched instead of silenced.
+
 ## Honest limits
 
 - The free duckdns.org subdomain has a valid Let's Encrypt certificate, but Chrome flags it as Dangerous. No real vote was held on it.
 - Terraform state is local only. IAM, Parameter Store and the Elastic IP are managed by hand.
-- `userdata.sh` does not yet cover the swap file, Docker metrics or the AWS CLI, and the rebuild was not re-proven after those additions.
+- The CI role policy and the `AWS_INSTANCE_ID` variable are tied to one instance ID, so a rebuild needs both updated by hand. Tag-scoping the role would fix that.
 - Alerts fire only inside Prometheus. There are no notifications.
 - Backups live on the same VM, and a restore was tested once.
