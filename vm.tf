@@ -8,10 +8,11 @@ data "aws_ami" "ubuntu" {
   }
 }
 
-data "aws_eip" "main" {
-  filter {
-    name   = "tag:Name"
-    values = ["votesecure-eip"]
+resource "aws_eip" "main" {
+  domain = "vpc"
+
+  tags = {
+    Name = "votesecure-eip"
   }
 }
 
@@ -20,7 +21,7 @@ resource "aws_instance" "main" {
   instance_type          = "t3.small"
   key_name               = aws_key_pair.main.key_name
   vpc_security_group_ids = [aws_security_group.main.id]
-  iam_instance_profile   = "votesecure-vm-ssm"
+  iam_instance_profile   = aws_iam_instance_profile.vm.name
   user_data              = file("${path.module}/userdata.sh")
 
   metadata_options {
@@ -43,5 +44,5 @@ resource "aws_instance" "main" {
 
 resource "aws_eip_association" "main" {
   instance_id   = aws_instance.main.id
-  allocation_id = data.aws_eip.main.id
+  allocation_id = aws_eip.main.id
 }
