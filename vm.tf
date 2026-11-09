@@ -17,8 +17,10 @@ resource "aws_eip" "main" {
 }
 
 resource "aws_instance" "main" {
+  #checkov:skip=CKV_AWS_126:Detailed monitoring costs extra and Prometheus already covers the VM
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = "t3.small"
+  ebs_optimized          = true
   key_name               = aws_key_pair.main.key_name
   vpc_security_group_ids = [aws_security_group.main.id]
   iam_instance_profile   = aws_iam_instance_profile.vm.name

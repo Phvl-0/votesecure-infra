@@ -8,6 +8,8 @@ resource "aws_key_pair" "main" {
 }
 
 resource "aws_security_group" "main" {
+  #checkov:skip=CKV_AWS_260:Caddy needs port 80 for the Let's Encrypt challenge and the HTTPS redirect
+  #checkov:skip=CKV_AWS_382:VM needs outbound for updates, image pulls, certificates and SSM; tighten later
   name        = "votesecure-tf-sg"
   description = "votesecure ssh from my ip, web open"
   vpc_id      = data.aws_vpc.default.id
@@ -35,6 +37,7 @@ resource "aws_security_group" "main" {
   }
   # Terraform removes the default allow-all egress rule, so we add it back
   egress {
+    description = "all outbound"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
