@@ -17,7 +17,7 @@ resource "aws_eip" "main" {
 }
 
 resource "aws_instance" "main" {
-  #checkov:skip=CKV_AWS_126:Detailed monitoring costs extra and Prometheus already covers the VM
+  #checkov-off:skip=CKV_AWS_126:Detailed monitoring costs extra and Prometheus already covers the VM
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = "t3.small"
   ebs_optimized          = true
