@@ -25,52 +25,61 @@ flowchart LR
 
 ## What is in this repo
 
-- `main.tf`, `network.tf`, `vm.tf`, `variables.tf`, `userdata.sh`: Terraform for the key pair, security group, VM and Elastic IP attachment
+- `main.tf`: provider, default tags (`Project=votesecure`) and the S3 backend (remote state with locking)
+- `network.tf`, `vm.tf`, `userdata.sh`: security group, VM and Elastic IP, all created by Terraform
+- `iam.tf`: the VM's role and instance profile (AmazonSSMManagedInstanceCore plus read access to `parameter/votesecure/*`)
+- `parameters.tf`: the four Parameter Store SecureStrings as placeholders; the real values are set outside Terraform
+- `ci.tf`: the GitHub OIDC provider and the `votesecure-ci-deploy` role, scoped by tag
+- `variables.tf`, `terraform.tfvars.example`, `outputs.tf`: inputs (copy the example to `terraform.tfvars`) and outputs
+- `.github/workflows/iac-scan.yml`: Checkov scan of the Terraform on every push and pull request
 - `docker-compose.prod.yml`, `Caddyfile`: the app stack (db, api, web, caddy)
 - `monitoring/`: Prometheus, node-exporter and Grafana, listening on 127.0.0.1 only and reached through an SSH tunnel
 - `scripts/`: `deploy.sh`, `backup.sh`, `monitoring-up.sh`, `provision.sh`
 
 ## How a deploy works
 
-A merge to `main` in the app repo builds the images, scans them with Trivy and pushes them tagged with the commit SHA. The deploy job then assumes an AWS role through OIDC, with no stored keys and a role pinned to the repo's main branch. SSM Run Command runs `deploy.sh` on the VM. The script fetches secrets from Parameter Store into a RAM-disk file, logs in to ghcr.io, pulls, restarts, health-checks over HTTPS, rolls back on failure and deletes the temporary files.
+A merge to `main` in the app repo builds the images, scans them with Trivy and pushes them tagged with the commit SHA. The deploy job then assumes an AWS role through OIDC, with no stored keys and a trust policy pinned to the repo's immutable subject and its main branch. SSM Run Command runs `deploy.sh` on the VM. The script fetches secrets from Parameter Store into a RAM-disk file, logs in to ghcr.io, pulls, restarts, health-checks over HTTPS, rolls back on failure and deletes the temporary files.
 
 ## Security notes
 
 - SSH by key only, root login off, ufw default deny, fail2ban; the security group allows SSH only from my own IP
-- Secrets live only in Parameter Store (SecureString) and never in Git
+- Secrets live only in Parameter Store (SecureString) and never in Git; values are set outside Terraform, but Terraform's state can hold them after a refresh, so the state bucket is private, versioned and encrypted
 - Only Caddy publishes ports (80 and 443); db, api and web stay internal
-- IMDSv2 required; the CI role can run one SSM document on one instance
+- IMDSv2 required; the CI role can run the AWS-RunShellScript document only on instances tagged `Project=votesecure`
 - Monitoring listens on localhost only
+- Checkov scans the Terraform in CI; four findings are skipped on purpose, each with its reason written next to the code
 
 ## Rebuild from scratch
 
 Prerequisites, done by hand once:
 
-- AWS account with MFA and an IAM admin user, and the AWS CLI and Terraform installed
-- An Elastic IP tagged `Name=votesecure-eip`, and a DNS name pointing at it
-- IAM role and instance profile `votesecure-vm-ssm` (AmazonSSMManagedInstanceCore plus read access to `parameter/votesecure/*`)
-- Parameter Store SecureStrings `/votesecure/POSTGRES_PASSWORD`, `SECRET_KEY`, `GHCR_TOKEN` and `GRAFANA_ADMIN_PASSWORD`
-- GitHub OIDC provider and role `votesecure-ci-deploy`, plus the repo variables `AWS_DEPLOY_ROLE_ARN` and `AWS_INSTANCE_ID`
+- AWS account with MFA and an IAM admin user, the AWS CLI, the GitHub CLI and Terraform 1.10 or newer
+- The state bucket, the one thing Terraform cannot create for itself. Create it with `BUCKET=votesecure-tfstate-$(aws sts get-caller-identity --query Account --output text)`, then `aws s3api create-bucket --bucket $BUCKET --region eu-north-1 --create-bucket-configuration LocationConstraint=eu-north-1`, then block public access and enable versioning on it
+- A DNS name for Caddy's HTTPS certificate, pointing at the Elastic IP (see the limits below)
 
 Steps:
 
-1. Create `terraform.tfvars` with `my_ip_cidr`, then run `terraform init` and `terraform apply`. `userdata.sh` hardens the VM and installs Docker, the AWS CLI, a swap file and Docker's metrics endpoint.
-2. Run `./scripts/provision.sh <app-commit-sha>`. It waits for the bootstrap, copies the compose file, Caddyfile, scripts and monitoring folder, deploys the app and starts monitoring.
-3. Update the CI role's policy and the `AWS_INSTANCE_ID` variable with the new instance ID.
+1. Run `cp terraform.tfvars.example terraform.tfvars` and put your own IP in it. Then run `terraform init -backend-config="bucket=$BUCKET"` and `terraform apply`. One apply creates the key pair, security group, VM, Elastic IP, VM role and profile, the four parameters, the OIDC provider and the CI role. `userdata.sh` hardens the VM and installs Docker, the AWS CLI, a swap file and Docker's metrics endpoint.
+2. Set the real secret values with `aws ssm put-parameter --overwrite`. Use `openssl rand -hex 24` for the three random ones. For `GHCR_TOKEN`, use a classic token with only `read:packages` and a short expiry, entered through `read -rs` so it never shows on screen or in history.
+3. Set the app repo's `AWS_DEPLOY_ROLE_ARN` variable from `terraform output -raw ci_deploy_role_arn`.
+4. Run `./scripts/provision.sh <app-commit-sha>`. It waits for the bootstrap, copies the compose file, Caddyfile, scripts and monitoring folder, deploys the app and starts monitoring.
 
 ## Cost and teardown
 
-Paid AWS account with no credits. A t3.small costs about $0.022 per hour, and an Elastic IP about $0.005 per hour even when idle. Stop the VM when idle. When finished, run `terraform destroy` and release the Elastic IP.
+Paid AWS account with no credits. A t3.small costs about $0.022 per hour, and an Elastic IP about $0.005 per hour. When not in use, run `terraform destroy`: it removes the VM, Elastic IP, IAM objects and parameters. The state bucket stays and costs almost nothing. Check the bill the next day, because charges post late.
 
 ## Verified
 
-- Destroyed and rebuilt the VM from code twice. The second rebuild, after adding swap, Docker metrics and the AWS CLI to `userdata.sh`, came up through `provision.sh`, and a CI deploy through SSM succeeded on it.
+- From a fresh clone, one `terraform apply` created 16 resources with no console clicks and wrote its state to S3. Systems Manager showed the VM Online, which proves the IAM role, profile and network path work. `terraform destroy` then removed all 16, and listings of instances, addresses, volumes, parameters, roles and OIDC providers came back empty.
+- Checkov runs in CI. I proved it can fail by removing one documented skip, watching the run go red on that exact rule, then reverting and watching it go green.
 - Trivy gates every image build, and fixed base-image CVEs were patched instead of silenced.
+- In Phase A the VM was destroyed and rebuilt from code twice, and a CI deploy through SSM succeeded on the rebuilt VM.
 
 ## Honest limits
 
-- The free duckdns.org subdomain has a valid Let's Encrypt certificate, but Chrome flags it as Dangerous. No real vote was held on it.
-- Terraform state is local only. IAM, Parameter Store and the Elastic IP are managed by hand.
-- The CI role policy and the `AWS_INSTANCE_ID` variable are tied to one instance ID, so a rebuild needs both updated by hand. Tag-scoping the role would fix that.
+- The Caddyfile still names a free duckdns.org subdomain that no longer exists, so a deploy now rolls back (Caddy cannot get a certificate). A rebuild needs a name pointing at the new Elastic IP, which changes every time. Chrome also flagged that free subdomain as Dangerous despite a valid certificate. No real vote was held on it.
+- The OIDC provider and the tag-scoped CI role are applied and valid, but no real deploy has gone through them yet, so the `ssm:resourceTag` condition is untested. The app repo's change to find the VM by tag is on a branch and not merged.
+- Checkov skips: port 80 open (needed for the certificate challenge), open outbound traffic (to be tightened), no customer-managed KMS key and no detailed monitoring (both cost extra).
+- The state bucket is created by hand. Secrets reach the state file once real values are set; write-only parameters would avoid that.
 - Alerts fire only inside Prometheus. There are no notifications.
 - Backups live on the same VM, and a restore was tested once.
