@@ -33,7 +33,7 @@ flowchart LR
 - `variables.tf`, `terraform.tfvars.example`, `outputs.tf`: inputs (copy the example to `terraform.tfvars`) and outputs
 - `.github/workflows/iac-scan.yml`: Checkov scan of the Terraform on every push and pull request
 - `docker-compose.prod.yml`, `Caddyfile`: the app stack (db, api, web, caddy)
-- `monitoring/`: Prometheus, node-exporter and Grafana, listening on 127.0.0.1 only and reached through an SSH tunnel
+- `monitoring/`: Prometheus, Alertmanager (Telegram notifications), node-exporter and Grafana, listening on 127.0.0.1 only and reached through an SSH tunnel
 - `scripts/`: `deploy.sh`, `backup.sh`, `monitoring-up.sh`, `provision.sh`
 
 ## How a deploy works
@@ -60,7 +60,7 @@ Prerequisites, done by hand once:
 Steps:
 
 1. Run `cp terraform.tfvars.example terraform.tfvars` and put your own IP in it. Then run `terraform init -backend-config="bucket=$BUCKET"` and `terraform apply`. One apply creates the key pair, security group, VM, Elastic IP, VM role and profile, the four parameters, the OIDC provider and the CI role. `userdata.sh` hardens the VM and installs Docker, the AWS CLI, a swap file and Docker's metrics endpoint.
-2. Set the real secret values with `aws ssm put-parameter --overwrite`. Use `openssl rand -hex 24` for the three random ones. For `GHCR_TOKEN`, use a classic token with only `read:packages` and a short expiry, entered through `read -rs` so it never shows on screen or in history.
+2. Set the real secret values with `aws ssm put-parameter --overwrite`. Use `openssl rand -hex 24` for the three random ones. `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` come from a bot made with @BotFather. For `GHCR_TOKEN`, use a classic token with only `read:packages` and a short expiry, entered through `read -rs` so it never shows on screen or in history.
 3. Set the app repo's `AWS_DEPLOY_ROLE_ARN` variable from `terraform output -raw ci_deploy_role_arn`.
 4. Run `./scripts/provision.sh <app-commit-sha>`. It waits for the bootstrap, copies the compose file, Caddyfile, scripts and monitoring folder, deploys the app and starts monitoring. Without a domain, run it as `SITE_ADDRESS=:80 ./scripts/provision.sh <app-commit-sha>` for lab mode (plain HTTP on the Elastic IP, for short-lived test use only).
 5. If your home IP changes, SSH times out. Re-run `terraform apply -var my_ip_cidr=<new-ip>/32` to update the security group.
@@ -71,6 +71,7 @@ Paid AWS account with no credits. A t3.small costs about $0.022 per hour, and an
 
 ## Verified
 
+- A real memory alert (a test container pushed memory to 87 percent) went pending, then firing, through Prometheus and Alertmanager and arrived as a Telegram message. The bot token and chat ID come from Parameter Store and are read from files in RAM.
 - Real deploy in lab mode: Terraform built the VM, `provision.sh` deployed the app over plain HTTP and it worked in the browser. A merge to `main` then ran the CI deploy through the OIDC role, which found the VM by its tag, and the VM ended up on the merged commit SHA.
 - From a fresh clone, one `terraform apply` created 16 resources with no console clicks and wrote its state to S3. Systems Manager showed the VM Online, which proves the IAM role, profile and network path work. `terraform destroy` then removed all 16, and listings of instances, addresses, volumes, parameters, roles and OIDC providers came back empty.
 - Checkov runs in CI. I proved it can fail by removing one documented skip, watching the run go red on that exact rule, then reverting and watching it go green.
@@ -83,5 +84,7 @@ Paid AWS account with no credits. A t3.small costs about $0.022 per hour, and an
 - The OIDC provider and the tag-scoped CI role are proven by a real deploy: a merge to `main` assumed the role, found the VM by its tag and deployed through SSM.
 - Checkov skips: port 80 open (needed for the certificate challenge), open outbound traffic (to be tightened), no customer-managed KMS key and no detailed monitoring (both cost extra).
 - The state bucket is created by hand. Secrets reach the state file once real values are set; write-only parameters would avoid that.
-- Alerts fire only inside Prometheus. There are no notifications.
+- Notifications go to one Telegram chat, with no escalation or on-call rota, and only the memory alert has been exercised.
+- Alertmanager's secret files live in RAM under `/run`, so a VM reboot removes them until `monitoring-up.sh` is run again.
+- The Source link in an alert message uses the VM's private hostname and Prometheus listens only on localhost, so the link does not open from a phone.
 - Backups live on the same VM, and a restore was tested once.
