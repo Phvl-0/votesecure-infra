@@ -23,7 +23,17 @@ get GHCR_TOKEN | docker login ghcr.io -u Phvl-0 --password-stdin > /dev/null
 $C pull -q
 $C up -d
 sleep 25
-if [ "$($C ps --status running -q | wc -l)" -eq 4 ] && curl -fsS -o /dev/null --resolve votesecure-phvl-0.duckdns.org:443:127.0.0.1 https://votesecure-phvl-0.duckdns.org/; then
+
+SITE=$(grep -E '^SITE_ADDRESS=' images.env | cut -d= -f2- || true)
+healthy() {
+  if [ "${SITE:-}" = ":80" ]; then
+    curl -fsS -o /dev/null http://127.0.0.1/
+  else
+    curl -fsS -o /dev/null --resolve votesecure-phvl-0.duckdns.org:443:127.0.0.1 https://votesecure-phvl-0.duckdns.org/
+  fi
+}
+if [ "$($C ps --status running -q | wc -l)" -eq 4 ] && healthy; then
+
   echo "deploy ok: $SHA"
 else
   echo "health check failed, rolling back"

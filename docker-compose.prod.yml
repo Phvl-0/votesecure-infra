@@ -36,6 +36,8 @@ services:
     image: caddy:2.11.4
     restart: unless-stopped
     mem_limit: 128m
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-votesecure-phvl-0.duckdns.org}
     ports:
       - "80:80"
       - "443:443"
