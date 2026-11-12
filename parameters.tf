@@ -5,6 +5,8 @@ resource "aws_ssm_parameter" "secret" {
     "SECRET_KEY",
     "GHCR_TOKEN",
     "GRAFANA_ADMIN_PASSWORD",
+    "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_CHAT_ID",
   ])
 
   name  = "/votesecure/${each.key}"
