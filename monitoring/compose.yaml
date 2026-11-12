@@ -24,6 +24,20 @@ services:
       - --web.listen-address=127.0.0.1:9100
     volumes:
       - /:/host:ro,rslave
+  alertmanager:
+    image: prom/alertmanager:v0.34.2
+    restart: unless-stopped
+    network_mode: host
+    mem_limit: 64m
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      - --web.listen-address=127.0.0.1:9093
+      - --cluster.listen-address=
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - /run/votesecure/alertmanager:/run/secrets:ro
+      - amdata:/alertmanager
   grafana:
     image: grafana/grafana:13.2.4
     restart: unless-stopped
@@ -40,3 +54,4 @@ services:
 volumes:
   promdata:
   grafanadata:
+  amdata:
