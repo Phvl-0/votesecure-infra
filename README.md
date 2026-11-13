@@ -78,6 +78,43 @@ Paid AWS account with no credits. A t3.small costs about $0.022 per hour, and an
 - Trivy gates every image build, and fixed base-image CVEs were patched instead of silenced.
 - In Phase A the VM was destroyed and rebuilt from code twice, and a CI deploy through SSM succeeded on the rebuilt VM.
 
+## Failure drills
+
+### Drill 1: a stopped container
+
+- Setup: the stack runs in lab mode, with a new alert, `ContainerNotRunning`, that fires when fewer than 8 containers have been running for a minute. It is built on Docker's engine metrics and sends to Telegram.
+- Fault: I stopped the API container with `docker stop`. The `unless-stopped` restart policy does not restart a container that was stopped on purpose, so nothing recovered by itself.
+- What a user saw: the home page still returned HTTP 200, but registering failed with Bad Gateway. The alert was firing when I checked 2 minutes 43 seconds after the stop, and the Telegram message arrived.
+- Recovery: `docker start votesecure-api-1`. The container came back, the count returned to 8, registration worked, and the Resolved message arrived about three minutes later (the alert group interval is five minutes).
+- What it shows: the front page can look healthy while the API is gone, which is why the alert watches what is running and not what answers. Detection took close to three minutes. The downtime was about 8.5 minutes, which includes the time I spent watching the alert before recovering.
+
+### Drill 2: a broken release and the rollback
+
+- Fault: I added a command to the web Dockerfile that exits with an error at startup, and merged it to `main` of the app repo. The image built and passed the Trivy scan, because nothing in it is vulnerable. It only fails when it runs.
+- What the pipeline did: the deploy job ran `deploy.sh`, whose health check failed (it needs four app containers running and the site answering). The log shows `health check failed, rolling back`, and the job ended red. The script restored the saved image tags and restarted the stack.
+- State afterwards: the VM was back on the previous commit, 8 containers were running and the site returned HTTP 200. One check taken during the failure returned 502, so users saw Bad Gateway for a short time. I did not measure how long.
+- Alert: no Telegram message arrived. The bad containers were up only for about half a minute, and `ContainerNotRunning` needs a full minute, so a short outage is invisible to that alert. The release gate in CI caught this failure and the alert is not a substitute for it.
+- Fix: I reverted the merge through a pull request. The pipeline built the reverted code, the deploy passed (`deploy ok`), and the VM ended on the new merge commit.
+- Limits of the rollback: it only restores the image tags that `deploy.sh` saved. A bad compose change or a changed secret is not covered, and a build that fails to run only on the second start would pass the health check.
+
+### Drill 3: wiping the database and restoring it
+
+- Setup: I registered a test user, then ran `backup.sh` at 09:56:11. It dumped the database, checked the archive, and copied it to S3 (1541 bytes). I then registered a second user, after the backup.
+- Fault: I dropped the live database with `DROP DATABASE authdb WITH (FORCE)` at 09:58:35 while every container kept running. The home page still returned HTTP 200, and login failed with an Internal Server Error.
+- Recovery: I stopped the API, created an empty `authdb`, loaded the newest backup in one transaction (`psql -1` with `ON_ERROR_STOP`), checked it, and started the API again. The site checked healthy at 10:00:50.
+- Proof: the first test user was back and could log in, which shows the password hash survived. The second user, created after the backup, was gone.
+- Numbers: downtime was about 2 minutes 15 seconds, and the restore itself took only seconds, so most of it was the time before I started it. The data loss was the 2 minutes 24 seconds between the backup and the wipe.
+- Gaps: nothing runs `backup.sh` on a schedule, so the real data loss window is however long since someone last ran it. No alert covers a missing database, because `ContainerNotRunning` only counts containers. I have not restored a large database or restored from the S3 copy yet.
+
+### Drill 4: restoring from S3
+
+- Setup: a third test user was registered and a fresh backup taken at 10:04:23. `backup.sh` uploaded it to the S3 bucket using the VM's role, so the bucket held two backups.
+- Fault: I deleted every local backup and dropped the database at 10:05:10, to simulate losing the VM's disk.
+- Recovery: the API was stopped, an empty database was created, the newest object was downloaded from S3 with the VM's own role, checked with `gzip -t`, and loaded in one transaction. The site was healthy at 10:06:02.
+- Proof: the row counts and a per-user check matched the backup, including the user created just before it.
+- Numbers: downtime was about 52 seconds, mostly the time before I started the restore. The data loss was the 47 seconds between the backup and the wipe.
+- Gaps: the bucket belongs to the same Terraform stack and `force_destroy` is on, so destroying the stack deletes the backups too. They survive losing the VM, but not a full teardown. The restore steps were typed by hand and are not a script. Nothing runs `backup.sh` on a schedule.
+
 ## Honest limits
 
 - HTTPS needs a domain I do not have. The Caddyfile defaults to a free duckdns.org name that no longer exists, so real-domain mode fails until a name points at the Elastic IP, which changes on every rebuild. Lab mode serves plain HTTP on the Elastic IP, so there is no TLS in lab mode and I make no TLS claim for it. Chrome also flagged the free subdomain as Dangerous despite a valid certificate.
