@@ -78,6 +78,16 @@ Paid AWS account with no credits. A t3.small costs about $0.022 per hour, and an
 - Trivy gates every image build, and fixed base-image CVEs were patched instead of silenced.
 - In Phase A the VM was destroyed and rebuilt from code twice, and a CI deploy through SSM succeeded on the rebuilt VM.
 
+## Failure drills
+
+### Drill 1: a stopped container
+
+- Setup: the stack runs in lab mode, with a new alert, `ContainerNotRunning`, that fires when fewer than 8 containers have been running for a minute. It is built on Docker's engine metrics and sends to Telegram.
+- Fault: I stopped the API container with `docker stop`. The `unless-stopped` restart policy does not restart a container that was stopped on purpose, so nothing recovered by itself.
+- What a user saw: the home page still returned HTTP 200, but registering failed with Bad Gateway. The alert was firing when I checked 2 minutes 43 seconds after the stop, and the Telegram message arrived.
+- Recovery: `docker start votesecure-api-1`. The container came back, the count returned to 8, registration worked, and the Resolved message arrived about three minutes later (the alert group interval is five minutes).
+- What it shows: the front page can look healthy while the API is gone, which is why the alert watches what is running and not what answers. Detection took close to three minutes. The downtime was about 8.5 minutes, which includes the time I spent watching the alert before recovering.
+
 ## Honest limits
 
 - HTTPS needs a domain I do not have. The Caddyfile defaults to a free duckdns.org name that no longer exists, so real-domain mode fails until a name points at the Elastic IP, which changes on every rebuild. Lab mode serves plain HTTP on the Elastic IP, so there is no TLS in lab mode and I make no TLS claim for it. Chrome also flagged the free subdomain as Dangerous despite a valid certificate.
