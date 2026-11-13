@@ -8,3 +8,10 @@ groups:
           severity: warning
         annotations:
           summary: "Memory usage is above 85 percent"
+      - alert: ContainerNotRunning
+        expr: engine_daemon_container_states_containers{state="running"} < 8
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Fewer than 8 containers are running"
