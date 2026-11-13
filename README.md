@@ -88,6 +88,15 @@ Paid AWS account with no credits. A t3.small costs about $0.022 per hour, and an
 - Recovery: `docker start votesecure-api-1`. The container came back, the count returned to 8, registration worked, and the Resolved message arrived about three minutes later (the alert group interval is five minutes).
 - What it shows: the front page can look healthy while the API is gone, which is why the alert watches what is running and not what answers. Detection took close to three minutes. The downtime was about 8.5 minutes, which includes the time I spent watching the alert before recovering.
 
+### Drill 2: a broken release and the rollback
+
+- Fault: I added a command to the web Dockerfile that exits with an error at startup, and merged it to `main` of the app repo. The image built and passed the Trivy scan, because nothing in it is vulnerable. It only fails when it runs.
+- What the pipeline did: the deploy job ran `deploy.sh`, whose health check failed (it needs four app containers running and the site answering). The log shows `health check failed, rolling back`, and the job ended red. The script restored the saved image tags and restarted the stack.
+- State afterwards: the VM was back on the previous commit, 8 containers were running and the site returned HTTP 200. One check taken during the failure returned 502, so users saw Bad Gateway for a short time. I did not measure how long.
+- Alert: no Telegram message arrived. The bad containers were up only for about half a minute, and `ContainerNotRunning` needs a full minute, so a short outage is invisible to that alert. The release gate in CI caught this failure and the alert is not a substitute for it.
+- Fix: I reverted the merge through a pull request. The pipeline built the reverted code, the deploy passed (`deploy ok`), and the VM ended on the new merge commit.
+- Limits of the rollback: it only restores the image tags that `deploy.sh` saved. A bad compose change or a changed secret is not covered, and a build that fails to run only on the second start would pass the health check.
+
 ## Honest limits
 
 - HTTPS needs a domain I do not have. The Caddyfile defaults to a free duckdns.org name that no longer exists, so real-domain mode fails until a name points at the Elastic IP, which changes on every rebuild. Lab mode serves plain HTTP on the Elastic IP, so there is no TLS in lab mode and I make no TLS claim for it. Chrome also flagged the free subdomain as Dangerous despite a valid certificate.
