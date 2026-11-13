@@ -97,6 +97,15 @@ Paid AWS account with no credits. A t3.small costs about $0.022 per hour, and an
 - Fix: I reverted the merge through a pull request. The pipeline built the reverted code, the deploy passed (`deploy ok`), and the VM ended on the new merge commit.
 - Limits of the rollback: it only restores the image tags that `deploy.sh` saved. A bad compose change or a changed secret is not covered, and a build that fails to run only on the second start would pass the health check.
 
+### Drill 3: wiping the database and restoring it
+
+- Setup: I registered a test user, then ran `backup.sh` at 09:56:11. It dumped the database, checked the archive, and copied it to S3 (1541 bytes). I then registered a second user, after the backup.
+- Fault: I dropped the live database with `DROP DATABASE authdb WITH (FORCE)` at 09:58:35 while every container kept running. The home page still returned HTTP 200, and login failed with an Internal Server Error.
+- Recovery: I stopped the API, created an empty `authdb`, loaded the newest backup in one transaction (`psql -1` with `ON_ERROR_STOP`), checked it, and started the API again. The site checked healthy at 10:00:50.
+- Proof: the first test user was back and could log in, which shows the password hash survived. The second user, created after the backup, was gone.
+- Numbers: downtime was about 2 minutes 15 seconds, and the restore itself took only seconds, so most of it was the time before I started it. The data loss was the 2 minutes 24 seconds between the backup and the wipe.
+- Gaps: nothing runs `backup.sh` on a schedule, so the real data loss window is however long since someone last ran it. No alert covers a missing database, because `ContainerNotRunning` only counts containers. I have not restored a large database or restored from the S3 copy yet.
+
 ## Honest limits
 
 - HTTPS needs a domain I do not have. The Caddyfile defaults to a free duckdns.org name that no longer exists, so real-domain mode fails until a name points at the Elastic IP, which changes on every rebuild. Lab mode serves plain HTTP on the Elastic IP, so there is no TLS in lab mode and I make no TLS claim for it. Chrome also flagged the free subdomain as Dangerous despite a valid certificate.
