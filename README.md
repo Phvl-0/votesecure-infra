@@ -106,6 +106,15 @@ Paid AWS account with no credits. A t3.small costs about $0.022 per hour, and an
 - Numbers: downtime was about 2 minutes 15 seconds, and the restore itself took only seconds, so most of it was the time before I started it. The data loss was the 2 minutes 24 seconds between the backup and the wipe.
 - Gaps: nothing runs `backup.sh` on a schedule, so the real data loss window is however long since someone last ran it. No alert covers a missing database, because `ContainerNotRunning` only counts containers. I have not restored a large database or restored from the S3 copy yet.
 
+### Drill 4: restoring from S3
+
+- Setup: a third test user was registered and a fresh backup taken at 10:04:23. `backup.sh` uploaded it to the S3 bucket using the VM's role, so the bucket held two backups.
+- Fault: I deleted every local backup and dropped the database at 10:05:10, to simulate losing the VM's disk.
+- Recovery: the API was stopped, an empty database was created, the newest object was downloaded from S3 with the VM's own role, checked with `gzip -t`, and loaded in one transaction. The site was healthy at 10:06:02.
+- Proof: the row counts and a per-user check matched the backup, including the user created just before it.
+- Numbers: downtime was about 52 seconds, mostly the time before I started the restore. The data loss was the 47 seconds between the backup and the wipe.
+- Gaps: the bucket belongs to the same Terraform stack and `force_destroy` is on, so destroying the stack deletes the backups too. They survive losing the VM, but not a full teardown. The restore steps were typed by hand and are not a script. Nothing runs `backup.sh` on a schedule.
+
 ## Honest limits
 
 - HTTPS needs a domain I do not have. The Caddyfile defaults to a free duckdns.org name that no longer exists, so real-domain mode fails until a name points at the Elastic IP, which changes on every rebuild. Lab mode serves plain HTTP on the Elastic IP, so there is no TLS in lab mode and I make no TLS claim for it. Chrome also flagged the free subdomain as Dangerous despite a valid certificate.
