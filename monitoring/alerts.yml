@@ -15,3 +15,10 @@ groups:
           severity: critical
         annotations:
           summary: "Fewer than 8 containers are running"
+      - alert: DatabaseMissing
+        expr: votesecure_database_up == 0 or absent(votesecure_database_up)
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The authdb database is missing or the check is not reporting"
