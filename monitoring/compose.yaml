@@ -22,6 +22,7 @@ services:
     command:
       - --path.rootfs=/host
       - --web.listen-address=127.0.0.1:9100
+      - --collector.textfile.directory=/host/var/lib/node_exporter/textfile
     volumes:
       - /:/host:ro,rslave
   alertmanager:
