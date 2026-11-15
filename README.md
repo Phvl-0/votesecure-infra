@@ -34,7 +34,8 @@ flowchart LR
 - `.github/workflows/iac-scan.yml`: Checkov scan of the Terraform on every push and pull request
 - `docker-compose.prod.yml`, `Caddyfile`: the app stack (db, api, web, caddy)
 - `monitoring/`: Prometheus, Alertmanager (Telegram notifications), node-exporter and Grafana, listening on 127.0.0.1 only and reached through an SSH tunnel
-- `scripts/`: `deploy.sh`, `backup.sh`, `monitoring-up.sh`, `provision.sh`
+- `backup.tf`: the private, versioned, encrypted S3 backup bucket with a lifecycle rule, and a narrow IAM policy that lets the VM write and read `db/` only
+- `scripts/`: `deploy.sh`, `backup.sh`, `db-check.sh`, `monitoring-up.sh`, `provision.sh`
 
 ## How a deploy works
 
@@ -64,6 +65,8 @@ Steps:
 3. Set the app repo's `AWS_DEPLOY_ROLE_ARN` variable from `terraform output -raw ci_deploy_role_arn`.
 4. Run `./scripts/provision.sh <app-commit-sha>`. It waits for the bootstrap, copies the compose file, Caddyfile, scripts and monitoring folder, deploys the app and starts monitoring. Without a domain, run it as `SITE_ADDRESS=:80 ./scripts/provision.sh <app-commit-sha>` for lab mode (plain HTTP on the Elastic IP, for short-lived test use only).
 5. If your home IP changes, SSH times out. Re-run `terraform apply -var my_ip_cidr=<new-ip>/32` to update the security group.
+6. To let the app repo's CI deploy job run against the new server, set the repository variable with `gh variable set DEPLOY_ENABLED --body true`. Set it back to `false` before tearing down, because the deploy job fails when the role and server do not exist.
+7. `provision.sh` also installs two cron jobs on the VM: `backup.sh` every 10 minutes (a lab setting) and `db-check.sh` every minute, which feeds the `DatabaseMissing` alert. Both write logs under `~/votesecure/backups/`.
 
 ## Cost and teardown
 
@@ -71,6 +74,7 @@ Paid AWS account with no credits. A t3.small costs about $0.022 per hour, and an
 
 ## Verified
 
+- Final full run, built from the code on `main`: a CI deploy through the OIDC role with `DEPLOY_ENABLED` on (the job assumed the role, found the VM by its tag and ended with `deploy ok`). The cron backup ran unattended every 10 minutes, failed loudly while the database was missing without leaving a bad file, and ran again after the restore. A `DatabaseMissing` alert reached Telegram about 3 minutes after the database was dropped and resolved about 6 minutes after it came back. The teardown ended with every listing empty.
 - A real memory alert (a test container pushed memory to 87 percent) went pending, then firing, through Prometheus and Alertmanager and arrived as a Telegram message. The bot token and chat ID come from Parameter Store and are read from files in RAM.
 - Real deploy in lab mode: Terraform built the VM, `provision.sh` deployed the app over plain HTTP and it worked in the browser. A merge to `main` then ran the CI deploy through the OIDC role, which found the VM by its tag, and the VM ended up on the merged commit SHA.
 - From a fresh clone, one `terraform apply` created 16 resources with no console clicks and wrote its state to S3. Systems Manager showed the VM Online, which proves the IAM role, profile and network path work. `terraform destroy` then removed all 16, and listings of instances, addresses, volumes, parameters, roles and OIDC providers came back empty.
@@ -79,6 +83,8 @@ Paid AWS account with no credits. A t3.small costs about $0.022 per hour, and an
 - In Phase A the VM was destroyed and rebuilt from code twice, and a CI deploy through SSM succeeded on the rebuilt VM.
 
 ## Failure drills
+
+The drills below record what I found at the time. Two gaps they mention were closed afterwards: `backup.sh` now runs from cron, and a `DatabaseMissing` alert covers a dropped database (see Verified).
 
 ### Drill 1: a stopped container
 
@@ -121,7 +127,8 @@ Paid AWS account with no credits. A t3.small costs about $0.022 per hour, and an
 - The OIDC provider and the tag-scoped CI role are proven by a real deploy: a merge to `main` assumed the role, found the VM by its tag and deployed through SSM.
 - Checkov skips: port 80 open (needed for the certificate challenge), open outbound traffic (to be tightened), no customer-managed KMS key and no detailed monitoring (both cost extra).
 - The state bucket is created by hand. Secrets reach the state file once real values are set; write-only parameters would avoid that.
-- Notifications go to one Telegram chat, with no escalation or on-call rota, and only the memory alert has been exercised.
+- Notifications go to one Telegram chat, with no escalation or on-call rota. The memory, container and database alerts have each been fired once on purpose.
 - Alertmanager's secret files live in RAM under `/run`, so a VM reboot removes them until `monitoring-up.sh` is run again.
 - The Source link in an alert message uses the VM's private hostname and Prometheus listens only on localhost, so the link does not open from a phone.
-- Backups live on the same VM, and a restore was tested once.
+- Backups run from cron every 10 minutes (a lab setting, so up to about 10 minutes of data can be lost) and are copied to S3. The bucket belongs to the same Terraform stack with `force_destroy` on, so a full teardown deletes them. The restore steps were typed by hand and are not a script.
+- SSH is allowed from one address only, so a changed home IP locks me out until I re-apply with the new one. Session Manager would remove the need for an open SSH port.
